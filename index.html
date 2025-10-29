@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MentiCNCI | Encuestas Interactivas</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuración de Tailwind para usar la fuente Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        /* Estilos personalizados para la Nube de Palabras */
+        .word-tag {
+            cursor: default;
+            transition: all 0.5s ease-in-out;
+            padding: 4px 8px;
+            margin: 4px;
+            border-radius: 9999px; /* rounded-full */
+            display: inline-block;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            background-color: #6366f1; /* Indigo-500 */
+            color: white;
+            animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.8); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        .text-neon {
+            text-shadow: 0 0 5px rgba(99, 102, 241, 0.7), 0 0 10px rgba(99, 102, 241, 0.5);
+        }
+        /* Estilo para el modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="min-h-screen flex flex-col items-center p-4">
+        <!-- Contenedor principal donde se inyecta todo el contenido -->
+        <header class="w-full max-w-4xl flex justify-between items-center p-4 mb-8 bg-white shadow-md rounded-xl">
+            <img src="https://i.postimg.cc/KzxV7m0Z/CNCI-VIRTUAL-LOGO.jpg" alt="Logo CNCI Virtual" class="h-10 sm:h-12 object-contain">
+            <h1 class="text-2xl sm:text-3xl font-extrabold text-indigo-600">MentiCNCI 🎓</h1>
+        </header>
+
+        <div id="content" class="w-full max-w-4xl p-6 bg-white shadow-2xl rounded-xl">
+            <!-- El contenido de la aplicación (Home, Presenter, Student, Presentation) se renderizará aquí -->
+            <div class="flex justify-center items-center h-48">
+                <p class="text-gray-500 animate-pulse">Cargando aplicación... 🚀</p>
+            </div>
+        </div>
+
+        <footer class="mt-8 text-sm text-gray-500">
+            <p>CNCI Interactivo | Tu ID de Sesión: <span id="user-id-display" class="font-mono text-xs bg-gray-100 p-1 rounded">Cargando...</span></p>
+        </footer>
+    </div>
+
+    <!-- Modal Personalizado para Contraseña/Confirmación -->
+    <div id="custom-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3 id="modal-title" class="text-xl font-bold mb-4 text-gray-800"></h3>
+            <p id="modal-message" class="mb-4 text-gray-600"></p>
+            
+            <!-- Contenido Dinámico (Ej: Input de Contraseña) -->
+            <div id="modal-input-container" class="mb-4">
+                <!-- Se inyectará el input de contraseña aquí -->
+            </div>
+
+            <div id="modal-buttons" class="flex justify-end space-x-3">
+                <!-- Los botones se inyectarán aquí (Aceptar, Cancelar) -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Carga de las librerías de Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, arrayUnion, serverTimestamp, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- CONFIGURACIÓN Y GLOBALES MANDATORIAS DE LA PLATAFORMA ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { /* Fallback config */ };
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // --- ESTADO DE LA APLICACIÓN ---
+        // 'home', 'presenter', 'student', 'results', 'presentation'
+        let currentPage = 'home';
+        let currentQuestion = null; // Objeto de la pregunta activa
+        let currentQuestionId = null;
+        
+        const PRESENTER_PASSWORD = "cnci2025"; // Contraseña requerida
+
+        // Función para inicializar Firebase
+        async function initializeFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        // Si no hay usuario, intentar iniciar sesión con el token personalizado
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                            userId = auth.currentUser.uid;
+                        } else {
+                            // Fallback: Iniciar sesión de forma anónima
+                            await signInAnonymously(auth);
+                            userId = auth.currentUser.uid;
+                        }
+                    }
+                    document.getElementById('user-id-display').textContent = userId;
+                    isAuthReady = true;
+                    renderApp(); // Renderizar después de la autenticación
+                });
+            } catch (error) {
+                console.error("Error al inicializar Firebase o autenticar:", error);
+                document.getElementById('content').innerHTML = `
+                    <div class="text-red-600 p-4 bg-red-100 rounded-lg">
+                        ⚠️ Error de Conexión. Revisa la consola para más detalles.
+                    </div>`;
+            }
+        }
+
+        // --- FUNCIONES DE UTILIDAD ---
+
+        // Genera un código de 6 dígitos
+        function generateCode() {
+            return Math.floor(100000 + Math.random() * 900000).toString();
+        }
+
+        // --- GESTIÓN DE MODALES PERSONALIZADOS ---
+
+        function closeModal() {
+            document.getElementById('custom-modal').classList.add('hidden');
+        }
+
+        /** Muestra un modal de confirmación genérico */
+        function showConfirmModal(title, message, confirmCallback) {
+            const modal = document.getElementById('custom-modal');
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-message').textContent = message;
+            document.getElementById('modal-input-container').innerHTML = ''; // Limpiar input
+
+            const buttonsContainer = document.getElementById('modal-buttons');
+            buttonsContainer.innerHTML = `
+                <button id="modal-cancel-btn" class="p-2 px-4 bg-gray-300 text-gray-800 font-semibold rounded-lg hover:bg-gray-400 transition">Cancelar</button>
+                <button id="modal-confirm-btn" class="p-2 px-4 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition">Confirmar</button>
+            `;
+
+            document.getElementById('modal-cancel-btn').onclick = closeModal;
+            document.getElementById('modal-confirm-btn').onclick = () => {
+                closeModal();
+                confirmCallback();
+            };
+
+            modal.classList.remove('hidden');
+        }
+
+        /** Muestra el modal para solicitar la contraseña del presentador */
+        function showPasswordModal() {
+            const modal = document.getElementById('custom-modal');
+            document.getElementById('modal-title').textContent = "Acceso de Presentador";
+            document.getElementById('modal-message').textContent = "Ingresa la contraseña para acceder al panel de control:";
+            
+            document.getElementById('modal-input-container').innerHTML = `
+                <input type="password" id="presenter-password-input" placeholder="Contraseña (cnci2025)" class="w-full p-3 border-2 border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-lg">
+            `;
+
+            const buttonsContainer = document.getElementById('modal-buttons');
+            buttonsContainer.innerHTML = `
+                <button id="modal-cancel-btn" class="p-2 px-4 bg-gray-300 text-gray-800 font-semibold rounded-lg hover:bg-gray-400 transition">Cancelar</button>
+                <button id="modal-login-btn" class="p-2 px-4 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition">Acceder</button>
+            `;
+
+            document.getElementById('modal-cancel-btn').onclick = closeModal;
+            document.getElementById('modal-login-btn').onclick = handlePresenterLogin;
+            
+            // Permitir Enter para acceder
+            const passwordInput = document.getElementById('presenter-password-input');
+            passwordInput.onkeydown = (e) => {
+                if (e.key === 'Enter') {
+                    handlePresenterLogin();
+                }
+            };
+            
+            modal.classList.remove('hidden');
+            passwordInput.focus();
+        }
+
+        function handlePresenterLogin() {
+            const passwordInput = document.getElementById('presenter-password-input');
+            const password = passwordInput.value;
+
+            if (password === PRESENTER_PASSWORD) {
+                closeModal();
+                currentPage = 'presenter';
+                renderApp();
+            } else {
+                alertUser('Contraseña incorrecta. Inténtalo de nuevo. 🚫', 'red');
+                passwordInput.value = '';
+                passwordInput.focus();
+            }
+        }
+
+
+        // --- RENDERIZADO PRINCIPAL ---
+
+        function renderApp() {
+            if (!isAuthReady) return;
+
+            const contentEl = document.getElementById('content');
+            contentEl.innerHTML = ''; // Limpiar contenido previo
+
+            switch (currentPage) {
+                case 'home':
+                    renderHome(contentEl);
+                    break;
+                case 'presenter':
+                    renderPresenterDashboard(contentEl);
+                    break;
+                case 'student':
+                    renderStudentView(contentEl);
+                    break;
+                case 'results':
+                    renderResultsView(contentEl);
+                    break;
+                case 'presentation':
+                    renderPresentationView(contentEl);
+                    break;
+                default:
+                    renderHome(contentEl);
+            }
+        }
+
+        // --- VISTAS DE RENDERIZADO ---
+
+        function renderHome(el) {
+            el.innerHTML = `
+                <h2 class="text-3xl font-bold mb-4 text-gray-800 text-center">Bienvenido al Aula Interactiva ✨</h2>
+                <p class="text-center text-gray-600 mb-8">Selecciona tu rol: Presentador o Alumno.</p>
+
+                <!-- Sección para Alumnos (Unirse) -->
+                <div class="bg-blue-50 p-6 rounded-xl mb-6 shadow-lg border-2 border-blue-200 transition duration-300 hover:shadow-xl">
+                    <h3 class="text-xl font-semibold mb-3 text-blue-700">Soy Alumno 🙋‍♂️</h3>
+                    <p class="mb-4 text-gray-700">Ingresa el código de 6 dígitos que te proporcionó tu profesor para unirte a la sesión en vivo.</p>
+                    <div class="flex flex-col sm:flex-row gap-4">
+                        <input type="text" id="join-code" placeholder="Código (ej: 123456)" maxlength="6" class="flex-grow p-3 border-2 border-blue-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150 text-xl text-center tracking-widest uppercase">
+                        <button id="btn-join" class="p-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition duration-200 shadow-md transform hover:scale-[1.02] active:scale-[0.98]">
+                            UNIRSE AHORA ➡️
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sección para Presentadores (Profesor) -->
+                <div class="bg-indigo-50 p-6 rounded-xl shadow-lg border-2 border-indigo-200 transition duration-300 hover:shadow-xl">
+                    <h3 class="text-xl font-semibold mb-4 text-indigo-700">Soy Profesor/Presentador 👩‍🏫</h3>
+                    <p class="mb-6 text-gray-700">Crea, edita y gestiona las preguntas para tu clase.</p>
+                    <button id="btn-presenter" class="w-full p-4 bg-indigo-600 text-white text-lg font-extrabold rounded-lg hover:bg-indigo-700 transition duration-200 shadow-xl transform hover:scale-[1.02] active:scale-[0.98]">
+                        IR AL DASHBOARD 📊
+                    </button>
+                </div>
+            `;
+
+            document.getElementById('btn-join').addEventListener('click', handleJoinSession);
+            // Modificación: El botón ahora llama al modal de contraseña
+            document.getElementById('btn-presenter').addEventListener('click', showPasswordModal);
+        }
+
+        async function handleJoinSession() {
+            const codeInput = document.getElementById('join-code');
+            const code = codeInput.value.trim().toUpperCase();
+
+            if (code.length !== 6) {
+                alertUser('Por favor, ingresa un código válido de 6 dígitos. 🧐', 'red');
+                return;
+            }
+
+            try {
+                // Buscar preguntas activas con ese código
+                const q = query(
+                    collection(db, `artifacts/${appId}/public/data/questions`),
+                    where('code', '==', code),
+                    where('status', '==', 'open')
+                );
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    alertUser(`No se encontró ninguna sesión activa con el código: ${code}. Inténtalo de nuevo. 😞`, 'red');
+                    return;
+                }
+
+                // Asumir que solo hay una pregunta activa por código
+                const doc = snapshot.docs[0];
+                currentQuestionId = doc.id;
+                currentQuestion = { id: doc.id, ...doc.data() };
+                currentPage = 'student';
+                renderApp();
+
+            } catch (error) {
+                console.error("Error al buscar la sesión:", error);
+                alertUser('Ocurrió un error al buscar la sesión. 🚨', 'red');
+            }
+        }
+
+        // --- VISTA DE PRESENTADOR ---
+
+        function renderPresenterDashboard(el) {
+            el.innerHTML = `
+                <div class="flex justify-between items-center mb-6 border-b pb-3">
+                    <h2 class="text-3xl font-extrabold text-indigo-800">Panel de Control ⚙️</h2>
+                    <button onclick="handleHomeNav()" class="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition duration-150" title="Volver a Inicio">
+                        🏠
+                    </button>
+                </div>
+
+                <div id="new-question-form" class="p-6 mb-8 bg-indigo-50 rounded-xl shadow-inner">
+                    <h3 class="text-xl font-semibold mb-4 text-indigo-700">➕ Crear Nueva Pregunta/Sesión</h3>
+                    
+                    <!-- NUEVO: Título de la Sesión -->
+                    <label for="session-title" class="block text-sm font-medium text-gray-700 mb-1">Título/Nombre de la Sesión</label>
+                    <input type="text" id="session-title" placeholder="Ej: Repaso Unidad 1" class="w-full p-3 mb-4 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+
+                    <label for="question-type" class="block text-sm font-medium text-gray-700 mb-1">Tipo de Pregunta</label>
+                    <select id="question-type" class="w-full p-3 mb-4 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                        <option value="wordcloud">☁️ Nube de Palabras</option>
+                        <option value="multiplechoice">📊 Opción Múltiple</option>
+                    </select>
+
+                    <label for="new-question-text" class="block text-sm font-medium text-gray-700 mb-1">Texto de la Pregunta</label>
+                    <textarea id="new-question-text" rows="2" placeholder="Escribe tu pregunta para la clase..." class="w-full p-3 mb-4 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none"></textarea>
+
+                    <!-- Dynamic options input for Multiple Choice -->
+                    <div id="mc-options-container" class="hidden">
+                        <label for="mc-options" class="block text-sm font-medium text-gray-700 mb-1">Opciones (separadas por coma, ej: Opción A, Opción B)</label>
+                        <input type="text" id="mc-options" placeholder="Ingeniería, Derecho, Administración" class="w-full p-3 mb-4 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                    </div>
+
+                    <button id="btn-create-question" class="w-full p-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition duration-200 transform hover:scale-[1.01]">
+                        GENERAR SESIÓN 🚀
+                    </button>
+                </div>
+
+                <div id="active-question-list">
+                    <h3 class="text-xl font-semibold mb-4 text-gray-700">Preguntas/Sesiones Creadas ⏱️</h3>
+                    <div id="questions-container" class="space-y-4">
+                        <p class="text-center text-gray-500 animate-pulse">Buscando preguntas...</p>
+                    </div>
+                </div>
+            `;
+            document.getElementById('btn-create-question').addEventListener('click', createNewQuestion);
+            document.getElementById('question-type').addEventListener('change', toggleMCOptions);
+
+            // Iniciar listener de preguntas activas
+            listenToQuestions();
+        }
+
+        function toggleMCOptions() {
+            const type = document.getElementById('question-type').value;
+            const container = document.getElementById('mc-options-container');
+            if (type === 'multiplechoice') {
+                container.classList.remove('hidden');
+            } else {
+                container.classList.add('hidden');
+            }
+        }
+
+        async function createNewQuestion() {
+            const sessionTitle = document.getElementById('session-title').value.trim(); // NUEVO: Obtener título
+            const questionText = document.getElementById('new-question-text').value.trim();
+            const questionType = document.getElementById('question-type').value;
+            let options = [];
+
+            if (!sessionTitle) {
+                alertUser('El Título de la Sesión no puede estar vacío. 📝', 'red');
+                return;
+            }
+            if (!questionText) {
+                alertUser('La pregunta no puede estar vacía. ✍️', 'red');
+                return;
+            }
+
+            if (questionType === 'multiplechoice') {
+                const optionsInput = document.getElementById('mc-options').value.trim();
+                options = optionsInput.split(',').map(opt => opt.trim()).filter(opt => opt.length > 0);
+                if (options.length < 2) {
+                    alertUser('Opción Múltiple requiere al menos 2 opciones separadas por coma. 📝', 'red');
+                    return;
+                }
+            }
+
+            try {
+                const newCode = generateCode();
+                const newQuestion = {
+                    code: newCode,
+                    presenterId: userId,
+                    sessionTitle: sessionTitle, // NUEVO CAMPO
+                    questionText: questionText,
+                    type: questionType,
+                    status: 'closed', // Inicia cerrada
+                    responses: [],
+                    // Solo añade opciones si es opción múltiple
+                    ...(questionType === 'multiplechoice' && { options: options }),
+                    createdAt: serverTimestamp()
+                };
+
+                const docRef = await addDoc(collection(db, `artifacts/${appId}/public/data/questions`), newQuestion);
+
+                document.getElementById('session-title').value = ''; // Limpiar campo
+                document.getElementById('new-question-text').value = '';
+                document.getElementById('mc-options').value = '';
+                alertUser(`¡Pregunta creada con éxito! Código: ${newCode}`, 'green');
+
+            } catch (error) {
+                console.error("Error al crear la pregunta:", error);
+                alertUser('Ocurrió un error al crear la pregunta. 🚨', 'red');
+            }
+        }
+
+        // Listener para actualizar la lista de preguntas del presentador
+        function listenToQuestions() {
+            const q = query(
+                collection(db, `artifacts/${appId}/public/data/questions`),
+                where('presenterId', '==', userId)
+            );
+
+            onSnapshot(q, (snapshot) => {
+                const container = document.getElementById('questions-container');
+                if (!container) return; // Si el usuario ha navegado fuera
+
+                if (snapshot.empty) {
+                    container.innerHTML = '<p class="text-gray-500 p-4 bg-gray-50 rounded-lg border">Aún no has creado ninguna pregunta. ¡Empieza ya! 🎉</p>';
+                    return;
+                }
+
+                container.innerHTML = snapshot.docs.map(doc => {
+                    const data = doc.data();
+                    const statusClass = data.status === 'open' ? 'bg-green-100 text-green-700 border-green-300' : 'bg-red-100 text-red-700 border-red-300';
+                    const buttonText = data.status === 'open' ? 'CERRAR VOTACIÓN 🛑' : 'ABRIR VOTACIÓN ✅';
+                    const buttonColor = data.status === 'open' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600';
+                    const statusEmoji = data.status === 'open' ? '🟢' : '🔴';
+                    const typeEmoji = data.type === 'wordcloud' ? '☁️' : '📊';
+
+                    // Conteo simple de respuestas
+                    const responseCount = data.responses ? data.responses.length : 0;
+                    
+                    // Sanitizar el título para pasarlo a la función onclick
+                    const safeTitle = (data.sessionTitle || 'Sesión sin título').replace(/'/g, "\\'");
+                    const safeQuestion = (data.questionText || 'Pregunta').replace(/'/g, "\\'");
+
+
+                    return `
+                        <div class="p-4 rounded-xl shadow-md ${statusClass} flex flex-col sm:flex-row justify-between items-start sm:items-center transition duration-300 hover:shadow-lg">
+                            <div class="flex-grow">
+                                <!-- NUEVO: Muestra el título de la sesión -->
+                                <p class="text-xs font-bold text-gray-500 uppercase tracking-wider">SESIÓN: <span class="text-indigo-700">${data.sessionTitle || 'Sin Título'}</span></p>
+                                
+                                <p class="text-xs font-medium mt-1">${statusEmoji} Estado: ${data.status.toUpperCase()} | Tipo: ${typeEmoji} ${data.type === 'wordcloud' ? 'Nube' : 'Múltiple'}</p>
+                                <h4 class="text-lg font-bold mt-1 text-gray-800">${data.questionText}</h4>
+                                <p class="font-extrabold text-xl mt-1 text-indigo-600 text-neon">CÓDIGO: ${data.code}</p>
+                                <p class="text-sm text-gray-600 mt-2">Respuestas: ${responseCount} 🧑‍🎓</p>
+                            </div>
+                            <div class="mt-4 sm:mt-0 flex flex-wrap gap-2 justify-end">
+                                <button onclick="toggleQuestionStatus('${doc.id}', '${data.status}')" class="p-2 text-sm font-semibold text-white rounded-lg ${buttonColor} transform hover:scale-[1.05] transition duration-150">
+                                    ${buttonText}
+                                </button>
+                                <button onclick="presentLive('${doc.id}')" class="p-2 text-sm font-semibold text-white bg-purple-600 rounded-lg hover:bg-purple-700 transform hover:scale-[1.05] transition duration-150">
+                                    PRESENTAR EN VIVO 💻
+                                </button>
+                                <button onclick="viewResults('${doc.id}')" class="p-2 text-sm font-semibold text-indigo-700 bg-indigo-200 rounded-lg hover:bg-indigo-300 transform hover:scale-[1.05] transition duration-150">
+                                    VER RESULTADOS 👁️
+                                </button>
+                                <!-- NUEVO: Botón de Eliminar -->
+                                <button onclick="deleteQuestion('${doc.id}', '${safeTitle}')" class="p-2 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 transform hover:scale-[1.05] transition duration-150">
+                                    ELIMINAR 🗑️
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            });
+        }
+
+        window.toggleQuestionStatus = async (docId, currentStatus) => {
+            const newStatus = currentStatus === 'open' ? 'closed' : 'open';
+            try {
+                await updateDoc(doc(db, `artifacts/${appId}/public/data/questions`, docId), {
+                    status: newStatus
+                });
+                alertUser(`Pregunta ${docId} ${newStatus === 'open' ? 'ABIERTA' : 'CERRADA'} correctamente.`, newStatus === 'open' ? 'green' : 'red');
+            } catch (error) {
+                console.error("Error al actualizar el estado:", error);
+                alertUser('Error al cambiar el estado. 🚨', 'red');
+            }
+        };
+        
+        // NUEVA FUNCIÓN: Eliminar pregunta
+        window.deleteQuestion = (docId, sessionTitle) => {
+            showConfirmModal(
+                `Confirmar Eliminación`, 
+                `¿Estás seguro de que quieres eliminar la sesión "${sessionTitle}"? Esta acción es irreversible y borrará ${currentQuestion.responses ? currentQuestion.responses.length : 0} respuestas.`, 
+                async () => {
+                    try {
+                        await deleteDoc(doc(db, `artifacts/${appId}/public/data/questions`, docId));
+                        alertUser(`Sesión "${sessionTitle}" eliminada correctamente.`, 'green');
+                    } catch (error) {
+                        console.error("Error al eliminar la pregunta:", error);
+                        alertUser('Error al eliminar la pregunta. 🚨', 'red');
+                    }
+                }
+            );
+        };
+
+
+        window.viewResults = (docId) => {
+            currentQuestionId = docId;
+            currentPage = 'results';
+            renderApp();
+        };
+        
+        window.presentLive = (docId) => {
+            currentQuestionId = docId;
+            currentPage = 'presentation';
+            renderApp();
+        };
+
+
+        // --- VISTA DE ALUMNO ---
+
+        function renderStudentView(el) {
+            if (!currentQuestion) {
+                el.innerHTML = `<p class="text-red-600">Error: No se encontró la pregunta activa. <button onclick="handleHomeNav()" class="text-blue-500">Volver a Home</button></p>`;
+                return;
+            }
+
+            el.innerHTML = `
+                <div class="flex justify-between items-center mb-6 border-b pb-3">
+                    <h2 class="text-3xl font-extrabold text-blue-800">Sesión Activa 💡</h2>
+                    <button onclick="handleHomeNav()" class="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition duration-150">
+                        🚪
+                    </button>
+                </div>
+                
+                <p class="text-xl font-semibold mb-2 text-blue-600">Título de la Sesión: ${currentQuestion.sessionTitle || 'Sin Título'}</p>
+                <p class="text-lg font-semibold mb-4 text-gray-700">Código: ${currentQuestion.code}</p>
+                <div id="question-details">
+                    <!-- Los detalles y el formulario se cargarán aquí y se actualizarán en tiempo real -->
+                    <p class="text-center text-gray-500 animate-pulse mt-4">Cargando pregunta...</p>
+                </div>
+            `;
+            // Iniciar listener de la pregunta específica
+            listenToActiveQuestion(currentQuestionId);
+        }
+
+        // Listener para actualizar la pregunta en la vista del alumno y resultados
+        function listenToActiveQuestion(docId) {
+            const docRef = doc(db, `artifacts/${appId}/public/data/questions`, docId);
+            onSnapshot(docRef, (docSnap) => {
+                // Actualizar el elemento correcto dependiendo de la página
+                const el = document.getElementById('question-details') || document.getElementById('results-view') || document.getElementById('presentation-view');
+                
+                if (!docSnap.exists() || !el) {
+                    // Si el presentador borra la pregunta o el alumno navega fuera
+                    if (currentPage !== 'home') {
+                        alertUser('La sesión ha sido cerrada o eliminada por el presentador. 👋', 'red');
+                        handleHomeNav();
+                    }
+                    return;
+                }
+
+                currentQuestion = { id: docSnap.id, ...docSnap.data() };
+
+                // Re-renderizar la vista actual con los datos actualizados
+                if (currentPage === 'student') {
+                    renderStudentQuestion(el);
+                } else if (currentPage === 'results') {
+                    renderResultsView(el);
+                } else if (currentPage === 'presentation') {
+                    renderPresentationView(el);
+                }
+            });
+        }
+
+        function renderStudentQuestion(el) {
+            const question = currentQuestion;
+            const statusEmoji = question.status === 'open' ? '✅ Abierto' : '🛑 Cerrado';
+            
+            // Comprobar si el usuario ya respondió (simulación simple)
+            const userResponse = question.responses.find(r => r.userId === userId);
+            const alreadyAnswered = !!userResponse;
+
+            let content;
+
+            if (question.status === 'open' && !alreadyAnswered) {
+                if (question.type === 'wordcloud') {
+                     content = `
+                        <p class="text-gray-600 mb-4 font-medium">${statusEmoji}</p>
+                        <h3 class="text-4xl font-extrabold mb-6 text-gray-900">${question.questionText}</h3>
+                        <div class="p-6 bg-white rounded-xl shadow-lg border-4 border-blue-400 animate-pulse-once">
+                            <textarea id="student-answer" rows="2" placeholder="Escribe tu palabra o frase..." class="w-full p-3 mb-4 border-2 border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 resize-none text-lg"></textarea>
+                            <button id="btn-submit-answer" class="w-full p-3 bg-blue-600 text-white text-lg font-bold rounded-lg hover:bg-blue-700 transition duration-200 transform hover:scale-[1.01]">
+                                ENVIAR RESPUESTA 🗳️
+                            </button>
+                        </div>
+                    `;
+                } else if (question.type === 'multiplechoice') {
+                    const optionsHtml = question.options.map((option, index) => `
+                        <label class="flex items-center p-3 mb-2 bg-indigo-100 rounded-lg cursor-pointer hover:bg-indigo-200 transition duration-150 transform hover:scale-[1.01]">
+                            <input type="radio" name="student-mc-answer" value="${option}" class="form-radio h-5 w-5 text-indigo-600" id="option-${index}">
+                            <span class="ml-3 text-lg font-medium text-gray-800">${option}</span>
+                        </label>
+                    `).join('');
+
+                    content = `
+                        <p class="text-gray-600 mb-4 font-medium">${statusEmoji}</p>
+                        <h3 class="text-4xl font-extrabold mb-6 text-gray-900">${question.questionText}</h3>
+                        <div class="p-6 bg-white rounded-xl shadow-lg border-4 border-indigo-400 animate-pulse-once">
+                            ${optionsHtml}
+                            <button id="btn-submit-answer" class="w-full mt-4 p-3 bg-blue-600 text-white text-lg font-bold rounded-lg hover:bg-blue-700 transition duration-200 transform hover:scale-[1.01]">
+                                ENVIAR VOTO 🗳️
+                            </button>
+                        </div>
+                    `;
+                }
+            } else if (alreadyAnswered) {
+                content = `
+                    <p class="text-gray-600 mb-4 font-medium">${statusEmoji}</p>
+                    <h3 class="text-4xl font-extrabold mb-6 text-gray-900">${question.questionText}</h3>
+                    <div class="p-8 bg-green-50 rounded-xl shadow-lg border-4 border-green-400 text-center animate-bounce-once">
+                        <p class="text-3xl mb-4">¡Gracias por participar! 🎉</p>
+                        <p class="text-lg text-green-800">Tu respuesta (<span class="font-semibold">${userResponse.value}</span>) ha sido registrada. Espera la siguiente pregunta.</p>
+                    </div>
+                `;
+            } else { // Status closed and not answered
+                content = `
+                    <p class="text-red-600 mb-4 font-medium">${statusEmoji}</p>
+                    <h3 class="text-4xl font-extrabold mb-6 text-gray-900">${question.questionText}</h3>
+                    <div class="p-8 bg-red-50 rounded-xl shadow-lg border-4 border-red-400 text-center">
+                        <p class="text-3xl mb-4">La votación está cerrada. ⏳</p>
+                        <p class="text-lg text-red-800">El profesor ha cerrado esta sesión. Vuelve más tarde.</p>
+                    </div>
+                `;
+            }
+
+            el.innerHTML = content;
+
+            if (question.status === 'open' && !alreadyAnswered) {
+                document.getElementById('btn-submit-answer').addEventListener('click', handleSubmitAnswer);
+            }
+        }
+
+        async function handleSubmitAnswer() {
+            const question = currentQuestion;
+            let answer;
+
+            if (question.type === 'wordcloud') {
+                const answerInput = document.getElementById('student-answer');
+                answer = answerInput.value.trim();
+                if (!answer) {
+                    alertUser('Por favor, escribe una respuesta. 🙏', 'red');
+                    return;
+                }
+                // Sanitizar para Word Cloud: tomar solo la primera palabra
+                answer = answer.split(/\s+/)[0].toUpperCase();
+            } else if (question.type === 'multiplechoice') {
+                const selected = document.querySelector('input[name="student-mc-answer"]:checked');
+                if (!selected) {
+                    alertUser('Por favor, selecciona una opción. 🙏', 'red');
+                    return;
+                }
+                answer = selected.value;
+            } else {
+                return;
+            }
+
+            try {
+                await updateDoc(doc(db, `artifacts/${appId}/public/data/questions`, currentQuestionId), {
+                    // CORRECCIÓN DEL BUG: Usamos la fecha local en formato ISO en lugar de serverTimestamp() dentro de arrayUnion
+                    responses: arrayUnion({
+                        userId: userId,
+                        value: answer,
+                        timestamp: new Date().toISOString()
+                    })
+                });
+
+                alertUser('Respuesta enviada. ¡Excelente! 👍', 'green');
+                // La vista se actualizará automáticamente gracias al listener
+            } catch (error) {
+                console.error("Error al enviar la respuesta:", error);
+                alertUser('Error al enviar la respuesta. 🚨', 'red');
+            }
+        }
+
+        // --- VISTA DE RESULTADOS (PRESENTER) ---
+
+        function renderResultsView(el) {
+            const question = currentQuestion;
+            if (!question) {
+                el.innerHTML = `<p class="text-red-600">Error: No hay datos de la pregunta. <button onclick="handleHomeNav()" class="text-blue-500">Volver a Home</button></p>`;
+                return;
+            }
+
+            el.innerHTML = `
+                <div class="flex justify-between items-center mb-6 border-b pb-3">
+                    <h2 class="text-3xl font-extrabold text-purple-800">Resultados (Código: ${question.code}) 📊</h2>
+                    <button onclick="handlePresenterNav()" class="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition duration-150">
+                        ⬅️ Volver
+                    </button>
+                </div>
+
+                <div class="p-8 mb-6 bg-purple-50 rounded-xl shadow-inner border-4 border-purple-300 text-center">
+                    <p class="text-xl font-semibold mb-2 text-purple-700">SESIÓN: ${question.sessionTitle || 'Sin Título'}</p>
+                    <h3 class="text-4xl font-extrabold text-gray-900">${question.questionText}</h3>
+                    <p class="mt-4 text-gray-600">Total de Respuestas: <span class="font-bold text-indigo-600">${question.responses ? question.responses.length : 0}</span> 🗳️</p>
+                </div>
+
+                <h3 class="text-2xl font-bold mb-4 text-gray-800">${question.type === 'wordcloud' ? 'Nube de Palabras ☁️' : 'Gráfico de Opciones Múltiples 📈'}</h3>
+                <div id="results-view" class="p-6 bg-white rounded-xl shadow-lg min-h-64 flex flex-wrap justify-center content-start border border-gray-200">
+                    <!-- Contenido de los resultados -->
+                    ${question.type === 'wordcloud' ? generateWordCloudHTML(question.responses) : renderMultipleChoiceBarChart(question, 'dark')}
+                </div>
+            `;
+            // El listener de onSnapshot ya está activo.
+        }
+
+        // --- VISTA DE PRESENTACIÓN EN VIVO ---
+        function renderPresentationView(el) {
+            const question = currentQuestion;
+            if (!question) {
+                el.innerHTML = `<p class="text-red-600">Error: No hay datos de la pregunta. <button onclick="handleHomeNav()" class="text-blue-500">Volver a Home</button></p>`;
+                return;
+            }
+            
+            // Usamos el id 'presentation-view' para que el listener pueda actualizar solo esta sección si el presentador navega fuera
+            // y regresa al dashboard sin recargar la página.
+            el.innerHTML = `
+                <div id="presentation-view" class="w-full h-auto min-h-[70vh] p-8 bg-gray-900 text-white rounded-xl shadow-2xl flex flex-col items-center justify-center">
+                    <div class="flex justify-between items-center w-full max-w-5xl mb-8">
+                        <div>
+                            <p class="text-xl font-medium text-gray-300">SESIÓN: ${question.sessionTitle || 'Sin Título'}</p>
+                            <p class="text-2xl font-bold text-yellow-400">Código: ${question.code} ${question.status === 'open' ? '🟢 EN VIVO' : '🔴 CERRADO'}</p>
+                        </div>
+                        <button onclick="handlePresenterNav()" class="p-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition duration-150 text-sm">
+                            FINALIZAR PRESENTACIÓN ✖️
+                        </button>
+                    </div>
+
+                    <h1 class="text-5xl font-extrabold text-center mb-10 text-yellow-400 text-neon">${question.questionText}</h1>
+                    <p class="text-xl font-medium text-gray-400 mb-6">Total de Respuestas: <span class="font-bold text-yellow-400">${question.responses ? question.responses.length : 0}</span> 🗳️</p>
+
+                    <div id="presentation-results" class="w-full max-w-5xl">
+                        ${question.type === 'wordcloud' ? generateWordCloudHTML(question.responses) : renderMultipleChoiceBarChart(question, 'light')}
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- FUNCIONES DE RESULTADOS ---
+
+        // Genera el HTML de la Nube de Palabras
+        function generateWordCloudHTML(responses) {
+            if (!responses || responses.length === 0) {
+                return '<p class="text-gray-500 text-center w-full pt-8">Aún no hay respuestas. ¡Dile a tus alumnos que participen! 📣</p>';
+            }
+
+            // 1. Contar la frecuencia de cada palabra
+            const counts = responses.reduce((acc, response) => {
+                const word = response.value;
+                acc[word] = (acc[word] || 0) + 1;
+                return acc;
+            }, {});
+
+            const wordData = Object.entries(counts).map(([word, count]) => ({ word, count }));
+            
+            // 2. Determinar el tamaño de fuente máximo y mínimo
+            const maxCount = Math.max(...wordData.map(d => d.count));
+            const minCount = Math.min(...wordData.map(d => d.count));
+            
+            // Rango de tamaño de fuente (ej. 1rem a 3rem)
+            const minSize = 1;
+            const maxSize = 3;
+
+            // Función para calcular el tamaño basado en la frecuencia
+            const getSize = (count) => {
+                if (maxCount === minCount) return `${(minSize + maxSize) / 2}rem`;
+                const scale = (count - minCount) / (maxCount - minCount);
+                return `${minSize + scale * (maxSize - minSize)}rem`;
+            };
+
+            // 3. Generar el HTML de las etiquetas (Word Tags)
+            return wordData.map(({ word, count }) => {
+                const fontSize = getSize(count);
+                // Usamos un color aleatorio dentro del rango CNCI/tech
+                const colors = ['#4f46e5', '#6366f1', '#8b5cf6', '#a855f7', '#06b6d4']; // Índigo, Violeta, Cyan
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                
+                return `
+                    <span class="word-tag" style="font-size: ${fontSize}; background-color: ${color};" title="${count} votos">
+                        ${word}
+                    </span>
+                `;
+            }).join('');
+        }
+
+        // Obtiene datos de resultados para Opción Múltiple
+        function getMultipleChoiceResults(question) {
+            const counts = question.responses.reduce((acc, response) => {
+                const option = response.value;
+                acc[option] = (acc[option] || 0) + 1;
+                return acc;
+            }, {});
+
+            const totalResponses = question.responses.length;
+            const data = question.options.map(option => ({
+                option,
+                count: counts[option] || 0,
+                percentage: totalResponses > 0 ? ((counts[option] || 0) / totalResponses) * 100 : 0
+            }));
+
+            // Ordenar por el orden de las opciones originales para mantener consistencia
+            return data;
+        }
+
+        // Renderiza el gráfico de barras para Opción Múltiple
+        function renderMultipleChoiceBarChart(question, theme = 'light') {
+            const data = getMultipleChoiceResults(question);
+            const total = question.responses.length;
+
+            if (total === 0) {
+                return '<p class="text-gray-500 text-center w-full pt-8">Aún no hay votos. ¡Espera las respuestas! ⏳</p>';
+            }
+
+            const isDark = theme === 'dark';
+            const baseBg = isDark ? 'bg-gray-700' : 'bg-gray-200';
+            const textLg = isDark ? 'text-2xl text-white' : 'text-lg text-gray-800';
+
+            // Colores para las barras (más vibrantes en tema oscuro)
+            const barColors = isDark 
+                ? ['bg-teal-400', 'bg-sky-400', 'bg-fuchsia-400', 'bg-amber-400', 'bg-lime-400']
+                : ['bg-teal-500', 'bg-sky-500', 'bg-fuchsia-500', 'bg-amber-500', 'bg-lime-500'];
+
+            return `
+                <div class="space-y-6 w-full">
+                    ${data.map((item, index) => {
+                        const barWidth = item.percentage.toFixed(0);
+                        const bgColor = barColors[index % barColors.length];
+
+                        return `
+                            <div class="p-2 rounded-lg ${baseBg} shadow-lg transition duration-300">
+                                <div class="flex justify-between items-center mb-1 ${isDark ? 'text-white' : 'text-gray-800'}">
+                                    <span class="font-bold ${textLg}">${item.option}</span>
+                                    <span class="font-bold ${textLg}">${barWidth}% (${item.count})</span>
+                                </div>
+                                <div class="w-full h-8 ${isDark ? 'bg-gray-600' : 'bg-gray-300'} rounded-full overflow-hidden">
+                                    <div class="h-full ${bgColor} rounded-full transition-all duration-700 ease-out" style="width: ${barWidth}%;"></div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+        }
+
+        // --- NAVEGACIÓN Y MENSAJES ---
+
+        window.handleHomeNav = () => {
+            currentPage = 'home';
+            currentQuestion = null;
+            currentQuestionId = null;
+            renderApp();
+        };
+
+        window.handlePresenterNav = () => {
+            currentPage = 'presenter';
+            currentQuestion = null;
+            currentQuestionId = null;
+            renderApp();
+        };
+
+        // Función personalizada para mostrar alertas (reemplaza alert())
+        function alertUser(message, type = 'blue') {
+            const colorMap = {
+                'red': 'bg-red-500',
+                'green': 'bg-green-500',
+                'blue': 'bg-blue-500'
+            };
+            const colorClass = colorMap[type] || colorMap['blue'];
+
+            let alertEl = document.getElementById('custom-alert');
+            if (!alertEl) {
+                alertEl = document.createElement('div');
+                alertEl.id = 'custom-alert';
+                alertEl.className = 'fixed top-0 left-1/2 transform -translate-x-1/2 p-4 mt-4 text-white rounded-lg shadow-xl transition-all duration-500 z-50';
+                document.body.appendChild(alertEl);
+            }
+
+            alertEl.className = `fixed top-0 left-1/2 transform -translate-x-1/2 p-4 mt-4 text-white rounded-lg shadow-xl transition-all duration-500 z-50 ${colorClass}`;
+            alertEl.textContent = message;
+            alertEl.style.top = '1rem'; // Mostrar
+
+            setTimeout(() => {
+                alertEl.style.top = '-100px'; // Ocultar
+            }, 3000);
+        }
+
+        // --- INICIO DE LA APLICACIÓN ---
+        document.addEventListener('DOMContentLoaded', initializeFirebase);
+    </script>
+</body>
+</html>
